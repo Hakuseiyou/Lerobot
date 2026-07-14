@@ -114,6 +114,11 @@ class ACTConfig(PreTrainedConfig):
     latent_dim: int = 32
     n_vae_encoder_layers: int = 4
 
+
+    # Number of subtasks (e.g. pick first = 0, pick second = 1). Size of the subtask embedding table.
+    num_subtasks: int = 2
+
+
     # Inference.
     # Note: the value used in ACT when temporal ensembling is enabled is 0.01.
     temporal_ensemble_coeff: float | None = None

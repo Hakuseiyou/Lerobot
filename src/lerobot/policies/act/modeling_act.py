@@ -92,6 +92,9 @@ class ACTPolicy(PreTrainedPolicy):
 
     def reset(self):
         """This should be called whenever the environment is reset."""
+        # Reset subtask tracking for a new episode.
+        self.model.current_subtask = 0
+        self._gripper_left_closed = False
         if self.config.temporal_ensemble_coeff is not None:
             self.temporal_ensembler.reset()
         else:
@@ -106,6 +109,23 @@ class ACTPolicy(PreTrainedPolicy):
         queue is empty.
         """
         self.eval()  # keeping the policy in eval mode as it could be set to train mode while queue is consumed
+
+        # --- Subtask auto-switching based on gripper state ---
+        # Gripper value: ~1.7 fully closed, ~14 half-closed (holding), up to 28 open.
+        # Episode starts fully closed. After the gripper leaves the fully-closed
+        # state and later returns to it (released the dice and closed), advance
+        # to the next subtask.
+        if OBS_STATE in batch:
+            gripper_pos = batch[OBS_STATE][0, -1].item()
+            if not hasattr(self, "_gripper_left_closed"):
+                self._gripper_left_closed = False
+            if gripper_pos >= 5.0:
+                self._gripper_left_closed = True
+            elif self._gripper_left_closed and gripper_pos < 5.0:
+                self._gripper_left_closed = False
+                self.model.current_subtask = min(
+                    self.model.current_subtask + 1, self.config.num_subtasks - 1
+                )
 
         if self.config.temporal_ensemble_coeff is not None:
             actions = self.predict_action_chunk(batch)
@@ -348,6 +368,12 @@ class ACT(nn.Module):
                 self.config.env_state_feature.shape[0], config.dim_model
             )
         self.encoder_latent_input_proj = nn.Linear(config.latent_dim, config.dim_model)
+
+        # Subtask embedding table: maps a subtask id (0/1) to a token (a dim_model-length vector)
+        self.encoder_subtask_embed = nn.Embedding(config.num_subtasks, config.dim_model)
+        # Current subtask id used at inference time (when batch has no subtask_index). Updated externally.
+        self.current_subtask = 0
+
         if self.config.image_features:
             self.encoder_img_feat_input_proj = nn.Conv2d(
                 backbone_model.fc.in_features, config.dim_model, kernel_size=1
@@ -358,6 +384,10 @@ class ACT(nn.Module):
             n_1d_tokens += 1
         if self.config.env_state_feature:
             n_1d_tokens += 1
+
+        # Reserve one position tag for the subtask token
+        n_1d_tokens += 1
+
         self.encoder_1d_feature_pos_embed = nn.Embedding(n_1d_tokens, config.dim_model)
         if self.config.image_features:
             self.encoder_cam_feat_pos_embed = ACTSinusoidalPositionEmbedding2d(config.dim_model // 2)
@@ -466,6 +496,20 @@ class ACT(nn.Module):
         # Environment state token.
         if self.config.env_state_feature:
             encoder_in_tokens.append(self.encoder_env_state_input_proj(batch[OBS_ENV_STATE]))
+
+        # Subtask token: look up the subtask embedding and append it to the token list
+        # Unlabeled frames at episode end are marked -1; treat them as the last subtask (1).
+        if "subtask_index" in batch:
+            subtask_index = batch["subtask_index"].clone()
+            subtask_index[subtask_index == -1] = 1
+        else:
+            # Inference: no subtask_index in batch; use the externally set current subtask id.
+            subtask_index = torch.full(
+                (batch_size,), self.current_subtask, dtype=torch.long,
+                device=encoder_in_tokens[0].device,
+            )
+        subtask_token = self.encoder_subtask_embed(subtask_index)
+        encoder_in_tokens.append(subtask_token)
 
         if self.config.image_features:
             # For a list of images, the H and W may vary but H*W is constant.

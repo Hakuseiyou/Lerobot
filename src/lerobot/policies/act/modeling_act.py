@@ -94,7 +94,7 @@ class ACTPolicy(PreTrainedPolicy):
         """This should be called whenever the environment is reset."""
         # Reset subtask tracking for a new episode.
         self.model.current_subtask = 0
-        self._gripper_left_closed = False
+        self._g_cand, self._g_count, self._g_stable = 0, 0, 0
         if self.config.temporal_ensemble_coeff is not None:
             self.temporal_ensembler.reset()
         else:
@@ -111,21 +111,33 @@ class ACTPolicy(PreTrainedPolicy):
         self.eval()  # keeping the policy in eval mode as it could be set to train mode while queue is consumed
 
         # --- Subtask auto-switching based on gripper state ---
-        # Gripper value: ~1.7 fully closed, ~14 half-closed (holding), up to 28 open.
-        # Episode starts fully closed. After the gripper leaves the fully-closed
-        # state and later returns to it (released the dice and closed), advance
-        # to the next subtask.
+        # Gripper: <5 fully closed, 5-11 holding, >11 open.
+        # A state must persist for 15 frames to count as stable (filters transients).
         if OBS_STATE in batch:
-            gripper_pos = batch[OBS_STATE][0, -1].item()
-            if not hasattr(self, "_gripper_left_closed"):
-                self._gripper_left_closed = False
-            if gripper_pos >= 5.0:
-                self._gripper_left_closed = True
-            elif self._gripper_left_closed and gripper_pos < 5.0:
-                self._gripper_left_closed = False
-                self.model.current_subtask = min(
-                    self.model.current_subtask + 1, self.config.num_subtasks - 1
-                )
+            g = batch[OBS_STATE][0, -1].item()
+            s = 0 if g < 5.0 else (1 if g < 11.0 else 2)
+            if not hasattr(self, "_g_cand"):
+                self._g_cand, self._g_count, self._g_stable = s, 0, s
+            if s == self._g_cand:
+                self._g_count += 1
+            else:
+                self._g_cand, self._g_count = s, 1
+            if self._g_count >= 15 and self._g_cand != self._g_stable:
+                prev, cur = self._g_stable, self._g_cand
+                self._g_stable = cur
+                n = self.config.num_subtasks
+                cs = self.model.current_subtask
+                if n == 2:
+                    if prev == 2 and cur == 0 and cs == 0:
+                        self.model.current_subtask = 1
+                elif n == 4:
+                    if prev == 2 and cur == 1 and cs in (0, 2):
+                        self.model.current_subtask = cs + 1
+                    elif prev == 2 and cur == 0 and cs == 1:
+                        self.model.current_subtask = 2
+                elif n == 8:
+                    if cs < 7:
+                        self.model.current_subtask = cs + 1
 
         if self.config.temporal_ensemble_coeff is not None:
             actions = self.predict_action_chunk(batch)

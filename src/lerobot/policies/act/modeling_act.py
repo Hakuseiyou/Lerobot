@@ -95,6 +95,7 @@ class ACTPolicy(PreTrainedPolicy):
         # Reset subtask tracking for a new episode.
         self.model.current_subtask = 0
         self._g_cand, self._g_count, self._g_stable = 0, 0, 0
+        self._tb_first_open_done = False
         if self.config.temporal_ensemble_coeff is not None:
             self.temporal_ensembler.reset()
         else:
@@ -127,7 +128,15 @@ class ACTPolicy(PreTrainedPolicy):
                 self._g_stable = cur
                 n = self.config.num_subtasks
                 cs = self.model.current_subtask
-                if n == 2:
+                rule = getattr(self.config, "switch_rule", "dice")
+                if rule == "taskbox":
+                    if not hasattr(self, "_tb_first_open_done"):
+                        self._tb_first_open_done = False
+                    if not self._tb_first_open_done and prev == 0 and cur == 2:
+                        self._tb_first_open_done = True
+                    elif self._tb_first_open_done and cs < n - 1:
+                        self.model.current_subtask = cs + 1
+                elif n == 2:
                     if prev == 2 and cur == 0 and cs == 0:
                         self.model.current_subtask = 1
                 elif n == 4:

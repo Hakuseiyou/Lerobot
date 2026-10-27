@@ -513,7 +513,10 @@ def train(cfg: TrainPipelineConfig, accelerator: "Accelerator | None" = None):
         for cam_key in dataset.meta.camera_keys:
             if cam_key in batch and batch[cam_key].dtype == torch.uint8:
                 batch[cam_key] = batch[cam_key].to(dtype=torch.float32) / 255.0
+        _subtask_index = batch.get("subtask_index", None)
         batch = preprocessor(batch)
+        if _subtask_index is not None:
+            batch["subtask_index"] = _subtask_index
         train_tracker.dataloading_s = time.perf_counter() - start_time
 
         train_tracker, output_dict = update_policy(

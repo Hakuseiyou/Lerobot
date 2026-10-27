@@ -114,7 +114,10 @@ class ACTPolicy(PreTrainedPolicy):
         # --- Subtask auto-switching based on gripper state ---
         # Gripper: <5 fully closed, 5-11 holding, >11 open.
         # A state must persist for 15 frames to count as stable (filters transients).
-        if OBS_STATE in batch:
+        _fixed = getattr(self.config, "fixed_subtask", -1)
+        if _fixed >= 0:
+            self.model.current_subtask = _fixed
+        elif OBS_STATE in batch:
             g = batch[OBS_STATE][0, -1].item()
             s = 0 if g < 5.0 else (1 if g < 11.0 else 2)
             if not hasattr(self, "_g_cand"):
@@ -134,8 +137,10 @@ class ACTPolicy(PreTrainedPolicy):
                         self._tb_first_open_done = False
                     if not self._tb_first_open_done and prev == 0 and cur == 2:
                         self._tb_first_open_done = True
+                        print(f"[subtask] 初回開 → 切替なし (subtask {cs})")
                     elif self._tb_first_open_done and cs < n - 1:
                         self.model.current_subtask = cs + 1
+                        print(f"[subtask] → {cs + 1} に切替 (gripper={g:.1f})")
                 elif n == 2:
                     if prev == 2 and cur == 0 and cs == 0:
                         self.model.current_subtask = 1
@@ -529,6 +534,8 @@ class ACT(nn.Module):
                 (batch_size,), self.current_subtask, dtype=torch.long,
                 device=encoder_in_tokens[0].device,
             )
+        if "subtask_index" not in batch:
+            print(f"[subtask] モデルに入力中: {self.current_subtask}", end='\r')
         subtask_token = self.encoder_subtask_embed(subtask_index)
         encoder_in_tokens.append(subtask_token)
 

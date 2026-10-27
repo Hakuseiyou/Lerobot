@@ -118,6 +118,7 @@ class ACTConfig(PreTrainedConfig):
     # Number of subtasks (e.g. pick first = 0, pick second = 1). Size of the subtask embedding table.
     num_subtasks: int = 2
     switch_rule: str = "dice"
+    fixed_subtask: int = -1
 
 
     # Inference.

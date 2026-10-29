@@ -90,8 +90,27 @@ class ACTPolicy(PreTrainedPolicy):
             },
         ]
 
+    def _gripper_stats(self):
+        """Load gripper mean/std from the saved normalizer stats."""
+        if not hasattr(self, "_g_mean"):
+            import glob, os
+            from safetensors.torch import load_file
+            from huggingface_hub import snapshot_download
+            src = str(self.config.pretrained_path)
+            pat = "policy_preprocessor_*_normalizer_processor.safetensors"
+            d = src if os.path.isdir(src) else snapshot_download(src, allow_patterns=[pat])
+            f = glob.glob(os.path.join(d, pat))[0]
+            stats = load_file(f)
+            self._g_mean = stats["observation.state.mean"][-1].item()
+            self._g_std = stats["observation.state.std"][-1].item()
+            print(f"[subtask] gripper mean={self._g_mean:.3f} std={self._g_std:.3f}")
+        return self._g_mean, self._g_std
+
     def reset(self):
         """This should be called whenever the environment is reset."""
+        print(f"[subtask] rule={getattr(self.config, 'switch_rule', '?')} "
+              f"n={self.config.num_subtasks} "
+              f"fixed={getattr(self.config, 'fixed_subtask', '?')}")
         # Reset subtask tracking for a new episode.
         self.model.current_subtask = 0
         self._g_cand, self._g_count, self._g_stable = 0, 0, 0
@@ -118,8 +137,13 @@ class ACTPolicy(PreTrainedPolicy):
         if _fixed >= 0:
             self.model.current_subtask = _fixed
         elif OBS_STATE in batch:
-            g = batch[OBS_STATE][0, -1].item()
-            s = 0 if g < 5.0 else (1 if g < 11.0 else 2)
+            g_norm = batch[OBS_STATE][0, -1].item()
+            m, sd = self._gripper_stats()
+            g = g_norm * sd + m  # unnormalize to raw gripper angle
+            if getattr(self.config, "switch_rule", "dice") == "taskbox":
+                s = 0 if g < 5.0 else 2  # taskbox: closed / open only
+            else:
+                s = 0 if g < 5.0 else (1 if g < 11.0 else 2)
             if not hasattr(self, "_g_cand"):
                 self._g_cand, self._g_count, self._g_stable = s, 0, s
             if s == self._g_cand:

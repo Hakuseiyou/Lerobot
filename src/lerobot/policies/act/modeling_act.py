@@ -186,6 +186,10 @@ class ACTPolicy(PreTrainedPolicy):
         # querying the policy.
         if len(self._action_queue) == 0:
             actions = self.predict_action_chunk(batch)[:, : self.config.n_action_steps]
+            if self.model.subtask_head is not None and self.model.last_subtask_logits is not None:
+                p = torch.softmax(self.model.last_subtask_logits[0], dim=-1)
+                print(f"[subtask-pred] predicted={int(p.argmax())} "
+                      f"probs={[round(x, 2) for x in p.tolist()]} rule={self.model.current_subtask}")
 
             # `self.model.forward` returns a (batch_size, n_action_steps, action_dim) tensor, but the queue
             # effectively has shape (n_action_steps, batch_size, *), hence the transpose.
@@ -230,6 +234,15 @@ class ACTPolicy(PreTrainedPolicy):
             loss = l1_loss + mean_kld * self.config.kl_weight
         else:
             loss = l1_loss
+
+        if getattr(self.config, "predict_subtask", False) and "subtask_index" in batch:
+            logits = self.model.last_subtask_logits
+            target = batch["subtask_index"].reshape(-1).long().clone()
+            target[target == -1] = self.config.num_subtasks - 1
+            ce = F.cross_entropy(logits, target)
+            loss = loss + self.config.subtask_loss_weight * ce
+            loss_dict["subtask_ce"] = ce.item()
+            loss_dict["subtask_acc"] = (logits.argmax(-1) == target).float().mean().item()
 
         return loss, loss_dict
 
@@ -421,6 +434,12 @@ class ACT(nn.Module):
 
         # Subtask embedding table: maps a subtask id (0/1) to a token (a dim_model-length vector)
         self.encoder_subtask_embed = nn.Embedding(config.num_subtasks, config.dim_model)
+        # Subtask prediction head: encoder output -> subtask logits
+        self.subtask_head = (
+            nn.Linear(config.dim_model, config.num_subtasks)
+            if getattr(config, "predict_subtask", False) else None
+        )
+        self.last_subtask_logits = None
         # Current subtask id used at inference time (when batch has no subtask_index). Updated externally.
         self.current_subtask = 0
 
@@ -436,7 +455,8 @@ class ACT(nn.Module):
             n_1d_tokens += 1
 
         # Reserve one position tag for the subtask token
-        n_1d_tokens += 1
+        if getattr(config, "use_subtask_input", True):
+            n_1d_tokens += 1
 
         self.encoder_1d_feature_pos_embed = nn.Embedding(n_1d_tokens, config.dim_model)
         if self.config.image_features:
@@ -560,8 +580,9 @@ class ACT(nn.Module):
             )
         if "subtask_index" not in batch:
             print(f"[subtask] モデルに入力中: {self.current_subtask}", end='\r')
-        subtask_token = self.encoder_subtask_embed(subtask_index)
-        encoder_in_tokens.append(subtask_token)
+        if getattr(self.config, "use_subtask_input", True):
+            subtask_token = self.encoder_subtask_embed(subtask_index)
+            encoder_in_tokens.append(subtask_token)
 
         if self.config.image_features:
             # For a list of images, the H and W may vary but H*W is constant.
@@ -587,6 +608,9 @@ class ACT(nn.Module):
 
         # Forward pass through the transformer modules.
         encoder_out = self.encoder(encoder_in_tokens, pos_embed=encoder_in_pos_embed)
+        if self.subtask_head is not None:
+            # encoder_out: (seq, batch, dim); skip the latent token at index 0
+            self.last_subtask_logits = self.subtask_head(encoder_out[1:].mean(dim=0))
         # TODO(rcadene, alexander-soare): remove call to `device` ; precompute and use buffer
         decoder_in = torch.zeros(
             (self.config.chunk_size, batch_size, self.config.dim_model),

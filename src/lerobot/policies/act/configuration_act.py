@@ -119,6 +119,10 @@ class ACTConfig(PreTrainedConfig):
     num_subtasks: int = 2
     switch_rule: str = "dice"
     fixed_subtask: int = -1
+    # Subtask prediction head
+    use_subtask_input: bool = True   # feed the subtask id as an input token
+    predict_subtask: bool = False    # predict the subtask id from the encoder output
+    subtask_loss_weight: float = 1.0
 
 
     # Inference.

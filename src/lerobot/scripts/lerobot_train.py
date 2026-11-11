@@ -400,10 +400,33 @@ def train(cfg: TrainPipelineConfig, accelerator: "Accelerator | None" = None):
         # same permutation. accelerate then shards it disjointly across ranks via BatchSamplerShard
         # without needing a `generator` attribute to synchronize an RNG, and resume is sample-exact.
         shuffle = False
+        # FIX: relative indices for episode subsets
+        ep_from = list(dataset.meta.episodes["dataset_from_index"])
+        ep_to = list(dataset.meta.episodes["dataset_to_index"])
+        if dataset.episodes is not None:
+            lengths = [ep_to[e] - ep_from[e] for e in sorted(dataset.episodes)]
+            ep_from, ep_to, pos = [], [], 0
+            for n in lengths:
+                ep_from.append(pos)
+                pos += n
+                ep_to.append(pos)
+        # TRIM_IDLE=1: skip the idle frames at the start of each episode (keep 5 frames before motion)
+        import os
+        if os.environ.get("TRIM_IDLE") == "1":
+            import numpy as np
+            states = np.stack([np.asarray(s) for s in dataset.hf_dataset["observation.state"]])
+            trims = []
+            for i in range(len(ep_from)):
+                s = states[ep_from[i]:ep_to[i], :5]
+                moved = np.where(np.abs(s - s[0]).max(axis=1) > 2.0)[0]
+                trim = max(0, int(moved[0]) - 5) if len(moved) else 0
+                ep_from[i] += trim
+                trims.append(trim)
+            logging.info(f"TRIM_IDLE: skipped start frames per episode = {trims}")
         sampler = EpisodeAwareSampler(
-            dataset.meta.episodes["dataset_from_index"],
-            dataset.meta.episodes["dataset_to_index"],
-            episode_indices_to_use=dataset.episodes,
+            ep_from,
+            ep_to,
+            episode_indices_to_use=None,
             drop_n_last_frames=getattr(active_cfg, "drop_n_last_frames", 0),
             shuffle=True,
             seed=cfg.seed if cfg.seed is not None else 0,

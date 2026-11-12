@@ -108,9 +108,13 @@ class ACTPolicy(PreTrainedPolicy):
 
     def reset(self):
         """This should be called whenever the environment is reset."""
-        print(f"[subtask] rule={getattr(self.config, 'switch_rule', '?')} "
-              f"n={self.config.num_subtasks} "
-              f"fixed={getattr(self.config, 'fixed_subtask', '?')}")
+        # QUIET_PRED: in predict mode the gripper rule is not used, so do not print it
+        if getattr(self.config, "use_subtask_input", True):
+            print(f"[subtask] mode=input rule={getattr(self.config, 'switch_rule', '?')} "
+                  f"n={self.config.num_subtasks} "
+                  f"fixed={getattr(self.config, 'fixed_subtask', '?')}")
+        else:
+            print(f"[subtask] mode=predict n={self.config.num_subtasks} (gripper rule off)")
         # Reset subtask tracking for a new episode.
         self.model.current_subtask = 0
         self._g_cand, self._g_count, self._g_stable = 0, 0, 0
@@ -136,7 +140,7 @@ class ACTPolicy(PreTrainedPolicy):
         _fixed = getattr(self.config, "fixed_subtask", -1)
         if _fixed >= 0:
             self.model.current_subtask = _fixed
-        elif OBS_STATE in batch:
+        elif OBS_STATE in batch and getattr(self.config, "use_subtask_input", True):
             g_norm = batch[OBS_STATE][0, -1].item()
             m, sd = self._gripper_stats()
             g = g_norm * sd + m  # unnormalize to raw gripper angle
@@ -189,7 +193,7 @@ class ACTPolicy(PreTrainedPolicy):
             if self.model.subtask_head is not None and self.model.last_subtask_logits is not None:
                 p = torch.softmax(self.model.last_subtask_logits[0], dim=-1)
                 print(f"[subtask-pred] predicted={int(p.argmax())} "
-                      f"probs={[round(x, 2) for x in p.tolist()]} rule={self.model.current_subtask}")
+                      f"probs={[round(x, 2) for x in p.tolist()]}")
 
             # `self.model.forward` returns a (batch_size, n_action_steps, action_dim) tensor, but the queue
             # effectively has shape (n_action_steps, batch_size, *), hence the transpose.
@@ -578,7 +582,7 @@ class ACT(nn.Module):
                 (batch_size,), self.current_subtask, dtype=torch.long,
                 device=encoder_in_tokens[0].device,
             )
-        if "subtask_index" not in batch:
+        if "subtask_index" not in batch and getattr(self.config, "use_subtask_input", True):
             print(f"[subtask] モデルに入力中: {self.current_subtask}", end='\r')
         if getattr(self.config, "use_subtask_input", True):
             subtask_token = self.encoder_subtask_embed(subtask_index)

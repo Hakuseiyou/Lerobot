@@ -206,7 +206,7 @@ class ACTPolicy(PreTrainedPolicy):
             if self.model.subtask_head is not None and self.model.last_subtask_logits is not None:
                 p = torch.softmax(self.model.last_subtask_logits[0], dim=-1)
                 print(f"[subtask-pred] {self._tstamp()} predicted={int(p.argmax())} "
-                      f"probs={[round(x, 2) for x in p.tolist()]}")
+                      f"")
 
             # `self.model.forward` returns a (batch_size, n_action_steps, action_dim) tensor, but the queue
             # effectively has shape (n_action_steps, batch_size, *), hence the transpose.

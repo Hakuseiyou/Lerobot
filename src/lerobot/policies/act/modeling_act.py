@@ -106,8 +106,18 @@ class ACTPolicy(PreTrainedPolicy):
             print(f"[subtask] gripper mean={self._g_mean:.3f} std={self._g_std:.3f}")
         return self._g_mean, self._g_std
 
+    def _tstamp(self):
+        # SUBTASK_TIME: seconds and control steps since the episode started
+        import time
+        t0 = getattr(self, "_ep_t0", None)
+        t = 0.0 if t0 is None else time.time() - t0
+        return f"t={t:6.1f}s step={getattr(self, '_ep_step', 0):5d}"
+
     def reset(self):
         """This should be called whenever the environment is reset."""
+        import time
+        self._ep_t0 = time.time()
+        self._ep_step = 0
         # QUIET_PRED: in predict mode the gripper rule is not used, so do not print it
         if getattr(self.config, "use_subtask_input", True):
             print(f"[subtask] mode=input rule={getattr(self.config, 'switch_rule', '?')} "
@@ -119,7 +129,7 @@ class ACTPolicy(PreTrainedPolicy):
         self.model.current_subtask = 0
         # QUIET_INPUT: show the starting subtask at the beginning of each episode
         if getattr(self.config, "use_subtask_input", True):
-            print("[subtask] start: subtask 0")
+            print(f"[subtask] {self._tstamp()} start: subtask 0")
         self._g_cand, self._g_count, self._g_stable = 0, 0, 0
         self._tb_first_open_done = False
         if self.config.temporal_ensemble_coeff is not None:
@@ -136,6 +146,7 @@ class ACTPolicy(PreTrainedPolicy):
         queue is empty.
         """
         self.eval()  # keeping the policy in eval mode as it could be set to train mode while queue is consumed
+        self._ep_step = getattr(self, "_ep_step", 0) + 1
 
         # --- Subtask auto-switching based on gripper state ---
         # Gripper: <5 fully closed, 5-11 holding, >11 open.
@@ -170,7 +181,7 @@ class ACTPolicy(PreTrainedPolicy):
                         self._tb_first_open_done = True
                     elif self._tb_first_open_done and cs < n - 1:
                         self.model.current_subtask = cs + 1
-                        print(f"[subtask] switch to subtask {cs + 1} (gripper={g:.1f})")
+                        print(f"[subtask] {self._tstamp()} switch to subtask {cs + 1} (gripper={g:.1f})")
                 elif n == 2:
                     if prev == 2 and cur == 0 and cs == 0:
                         self.model.current_subtask = 1
@@ -194,7 +205,7 @@ class ACTPolicy(PreTrainedPolicy):
             actions = self.predict_action_chunk(batch)[:, : self.config.n_action_steps]
             if self.model.subtask_head is not None and self.model.last_subtask_logits is not None:
                 p = torch.softmax(self.model.last_subtask_logits[0], dim=-1)
-                print(f"[subtask-pred] predicted={int(p.argmax())} "
+                print(f"[subtask-pred] {self._tstamp()} predicted={int(p.argmax())} "
                       f"probs={[round(x, 2) for x in p.tolist()]}")
 
             # `self.model.forward` returns a (batch_size, n_action_steps, action_dim) tensor, but the queue
